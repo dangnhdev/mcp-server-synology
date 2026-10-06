@@ -386,6 +386,11 @@ class SynologyMCPServer:
             "confirm": {"type": "boolean", "description": "Must be true to authorize the requested power action"},
         }, ["guest_id", "action", "confirm"]), partial(self._handle_virtualization_call, method_name="control"))
 
+        self._register_tool("synology_vm_delete", "DESTRUCTIVE: permanently delete a stopped VMM virtual machine; associated VM data may be removed. Requires confirm=true; the delete is submitted once and verified by rereading inventory.", TN_PR({
+            "guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"},
+            "confirm": {"type": "boolean", "description": "Must be true to authorize permanent deletion of this virtual machine"},
+        }, ["guest_id", "confirm"]), partial(self._handle_virtualization_call, method_name="delete"))
+
         # NFS Management
         self._register_tool("synology_nfs_status", "Get NFS service status and configuration (enabled/disabled, NFSv4 settings)", TN, partial(self._handle_nfs_call, method_name="nfs_status"))
         self._register_tool("synology_nfs_enable", "Enable or disable the NFS file service on the Synology NAS", TN_P({"enable": {"type": "boolean", "description": "True to enable NFS, false to disable (default: true)"}, "nfs_v4": {"type": "boolean", "description": "Enable NFSv4 support (default: false)"}}), self._handle_nfs_enable)
@@ -705,6 +710,7 @@ class SynologyMCPServer:
             "synology_target_unmap_lun",
             "synology_vm_get",
             "synology_vm_control",
+            "synology_vm_delete",
             "synology_vm_list",
         }
     )
@@ -1847,7 +1853,7 @@ class SynologyMCPServer:
     async def _handle_virtualization_call(
         self, arguments: dict, method_name: str
     ) -> list[types.TextContent]:
-        """Handle VMM inventory, detail, and power operations."""
+        """Handle VMM inventory, detail, power, and deletion operations."""
         base_url = self._get_base_url(arguments)
         virtualization = self._get_virtualization(base_url)
 
@@ -1860,6 +1866,12 @@ class SynologyMCPServer:
                 virtualization.control_virtual_machine,
                 arguments["guest_id"],
                 arguments["action"],
+                arguments["confirm"],
+            )
+        elif method_name == "delete":
+            result = await asyncio.to_thread(
+                virtualization.delete_virtual_machine,
+                arguments["guest_id"],
                 arguments["confirm"],
             )
         else:

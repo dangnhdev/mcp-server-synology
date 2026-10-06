@@ -8,7 +8,7 @@ from utils.synology_api import SynologyAPIClient
 
 
 class SynologyVirtualization:
-    """List, inspect, and control Virtual Machine Manager guests."""
+    """List, inspect, control, and delete Virtual Machine Manager guests."""
 
     guest_api = "SYNO.Virtualization.API.Guest"
     guest_action_api = "SYNO.Virtualization.API.Guest.Action"
@@ -235,8 +235,117 @@ class SynologyVirtualization:
                 verified=False,
             )
 
+    def delete_virtual_machine(self, guest_id: str, confirm: bool) -> Dict[str, Any]:
+        """Delete one stopped VMM guest and verify it is absent from inventory.
+
+        The delete request is submitted at most once. If the response is
+        ambiguous, read-only inventory checks determine whether it completed.
+        """
+        normalized_id = guest_id.strip() if isinstance(guest_id, str) else ""
+        if not normalized_id:
+            return self._failure("invalid_guest_id", "guest_id must be a non-empty string")
+        if confirm is not True:
+            return self._failure(
+                "confirmation_required",
+                "Set confirm=true to authorize deleting this virtual machine",
+            )
+
+        lock = self._control_lock(normalized_id)
+        with lock:
+            inventory = self.list_virtual_machines()
+            if not inventory.get("success"):
+                return inventory
+            guests, error = self._guest_rows(inventory)
+            if error:
+                return error
+
+            matching = [guest for guest in guests if guest["guest_id"] == normalized_id]
+            if len(matching) != 1:
+                return self._failure(
+                    "not_found" if not matching else "invalid_inventory",
+                    "Virtual machine was not found" if not matching else "DSM returned duplicate guest IDs",
+                    guest_id=normalized_id,
+                )
+
+            current_state = matching[0]["status"].strip().lower()
+            if current_state not in self._STOPPED_STATES:
+                return self._failure(
+                    "state_conflict",
+                    "Only a stopped virtual machine can be deleted",
+                    guest_id=normalized_id,
+                    current_state=current_state or "unknown",
+                )
+
+            request_result = self._api.post(
+                self.guest_api,
+                "delete",
+                1,
+                {"guest_id": normalized_id},
+            )
+            request_error = request_result.get("error")
+            request_error_code = (
+                request_error.get("code") if isinstance(request_error, dict) else None
+            )
+            if (
+                not request_result.get("success")
+                and request_error_code not in self._AMBIGUOUS_REQUEST_ERRORS
+            ):
+                return request_result
+
+            for attempt in range(self._VERIFY_ATTEMPTS):
+                verification = self.list_virtual_machines(timeout=3)
+                if not verification.get("success"):
+                    if attempt == self._VERIFY_ATTEMPTS - 1:
+                        return self._failure(
+                            "verification_failed",
+                            "The delete may have been submitted, but DSM state could not be "
+                            "read back. Inspect the virtual machine before retrying.",
+                            guest_id=normalized_id,
+                            request_accepted=(
+                                True if request_result.get("success") else "unknown"
+                            ),
+                            verified=False,
+                        )
+                else:
+                    verified_guests, error = self._guest_rows(verification)
+                    if error:
+                        return self._failure(
+                            "verification_failed",
+                            "The delete may have been submitted, but DSM returned an invalid "
+                            "inventory. Inspect the virtual machine before retrying.",
+                            guest_id=normalized_id,
+                            request_accepted=(
+                                True if request_result.get("success") else "unknown"
+                            ),
+                            verified=False,
+                        )
+                    if not any(guest["guest_id"] == normalized_id for guest in verified_guests):
+                        return {
+                            "success": True,
+                            "data": {
+                                "guest_id": normalized_id,
+                                "deleted": True,
+                                "request_accepted": (
+                                    True if request_result.get("success") else "unknown"
+                                ),
+                                "verified": True,
+                            },
+                        }
+
+                if attempt < self._VERIFY_ATTEMPTS - 1:
+                    time.sleep(self._VERIFY_INTERVAL_SECONDS)
+
+            return self._failure(
+                "state_not_reached",
+                "DSM still reports the virtual machine. The delete request was not retried; "
+                "refresh the inventory before taking another action.",
+                guest_id=normalized_id,
+                request_accepted=(True if request_result.get("success") else "unknown"),
+                verified=False,
+            )
+
     def _control_lock(self, guest_id: str) -> Any:
-        """Serialize state-check and power-action calls for one guest."""
+        """Serialize state checks and mutations for one guest."""
         with self._control_locks_guard:
             return self._control_locks.setdefault(guest_id, threading.Lock())
 

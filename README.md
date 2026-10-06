@@ -574,12 +574,17 @@ misspelled `type` would silently take the default.
     eight times
   - A forced `poweroff` may cause guest data loss. If the final state cannot be confirmed, the
     action is not resubmitted; refresh the inventory before trying again
+- **`synology_vm_delete`** - Permanently delete a stopped virtual machine; associated VM data may be removed
+  - `guest_id` (required): Stable ID from `synology_vm_list`
+  - `confirm` (required): Must be `true` to authorize deletion
+  - The tool refuses running or unknown-state VMs, submits deletion once, and checks that the VM
+    is absent from inventory. If the result cannot be confirmed, inspect the inventory before retrying
 
 These tools use the public `SYNO.Virtualization.API.Guest` v1 and
 `SYNO.Virtualization.API.Guest.Action` v1 endpoints. They require Virtual Machine Manager to be
 installed and the DSM account to have VMM access. The `synology_vm_list` inventory call was
-smoke-tested against the configured live NAS. Power actions have not been exercised against a real
-guest.
+smoke-tested against the configured live NAS. Power and delete actions have not been exercised
+against a real guest.
 
 ### 📦 NFS Management
 - **`synology_nfs_status`** - Get NFS service status and configuration
