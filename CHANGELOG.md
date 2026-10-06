@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- **Virtual Machine Manager tools** — list and inspect VMM guests, then power on, request a graceful
+  shutdown, or force a power-off. Power actions require `confirm=true`, check the current guest
+  state, verify the final state, and are never automatically resubmitted after an ambiguous result.
+
 ## [1.8.0] - 2026-09-29
 
 ### Added

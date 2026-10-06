@@ -26,6 +26,7 @@ from filestation import SynologyFileStation
 from health import SynologyHealth
 from iscsi import SynologyISCSI
 from iscsi.synology_iscsi import _uuid_list
+from virtualization import SynologyVirtualization
 
 # DSM's login codes, decoded. One table for both call sites (`_handle_login`
 # and `_login_nas`) so the two cannot drift apart, which they already had.
@@ -121,6 +122,7 @@ class SynologyMCPServer:
         self.container_instances: Dict[str, SynologyContainer] = {}
         self.nfs_instances: Dict[str, SynologyNFS] = {}
         self.iscsi_instances: Dict[str, SynologyISCSI] = {}
+        self.virtualization_instances: Dict[str, SynologyVirtualization] = {}
         # One lock per NAS key, guarding the lazy login in _resolve_base_url.
         # Created lazily and only ever touched from the event-loop thread, so
         # the dict itself needs no locking.
@@ -375,6 +377,15 @@ class SynologyMCPServer:
         self._register_tool("synology_container_network_create", "Create a Docker network", CI | {"properties": {**CI["properties"], "name": {"type": "string", "description": "Network name"}, "driver": {"type": "string", "description": "Network driver (default: bridge)"}, "subnet": {"type": "string", "description": "Subnet CIDR (optional)"}, "gateway": {"type": "string", "description": "Gateway IP (optional)"}, "ip_range": {"type": "string", "description": "IP range (optional)"}, "enable_ipv6": {"type": "boolean", "description": "Enable IPv6 (default: false)"}}, "required": ["name"]}, partial(self._handle_container_call, method_name="network_create"))
         self._register_tool("synology_container_network_delete", "Delete a Docker network", CI | {"properties": {**CI["properties"], "name": {"type": "string", "description": "Network name"}}, "required": ["name"]}, partial(self._handle_container_call, method_name="network_delete"))
 
+        # Virtual Machine Manager
+        self._register_tool("synology_vm_list", "List virtual machines managed by Synology Virtual Machine Manager", TN, partial(self._handle_virtualization_call, method_name="list"))
+        self._register_tool("synology_vm_get", "Get a virtual machine's identity, state, CPU, and memory details", TN_PR({"guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"}}, ["guest_id"]), partial(self._handle_virtualization_call, method_name="get"))
+        self._register_tool("synology_vm_control", "Control a VMM virtual machine: power it on, request a graceful shutdown, or force it off. Requires confirm=true; forced power-off can cause guest data loss. The current state is checked before action and rechecked up to eight times; ambiguous actions are never resubmitted.", TN_PR({
+            "guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"},
+            "action": {"type": "string", "enum": ["poweron", "shutdown", "poweroff"], "description": "poweron starts a stopped VM; shutdown requests a graceful shutdown of a running VM; poweroff immediately cuts power to a running VM"},
+            "confirm": {"type": "boolean", "description": "Must be true to authorize the requested power action"},
+        }, ["guest_id", "action", "confirm"]), partial(self._handle_virtualization_call, method_name="control"))
+
         # NFS Management
         self._register_tool("synology_nfs_status", "Get NFS service status and configuration (enabled/disabled, NFSv4 settings)", TN, partial(self._handle_nfs_call, method_name="nfs_status"))
         self._register_tool("synology_nfs_enable", "Enable or disable the NFS file service on the Synology NAS", TN_P({"enable": {"type": "boolean", "description": "True to enable NFS, false to disable (default: true)"}, "nfs_v4": {"type": "boolean", "description": "Enable NFSv4 support (default: false)"}}), self._handle_nfs_enable)
@@ -577,6 +588,21 @@ class SynologyMCPServer:
 
         return self.container_instances[base_url]
 
+    def _get_virtualization(self, base_url: str) -> SynologyVirtualization:
+        """Get or create Virtual Machine Manager instance for a base URL."""
+        if base_url not in self.sessions:
+            raise Exception(f"No active session for {base_url}. Please login first.")
+
+        if base_url not in self.virtualization_instances:
+            self.virtualization_instances[base_url] = SynologyVirtualization(
+                base_url,
+                self.sessions[base_url],
+                verify_ssl=config.verify_ssl_for(base_url),
+                syno_token=self.syno_tokens.get(base_url),
+            )
+
+        return self.virtualization_instances[base_url]
+
     def _get_nfs(self, base_url: str) -> SynologyNFS:
         """Get or create NFS instance for a base URL."""
         if base_url not in self.sessions:
@@ -677,6 +703,9 @@ class SynologyMCPServer:
             "synology_target_delete",
             "synology_target_map_lun",
             "synology_target_unmap_lun",
+            "synology_vm_get",
+            "synology_vm_control",
+            "synology_vm_list",
         }
     )
 
@@ -725,6 +754,7 @@ class SynologyMCPServer:
             self.downloadstation_instances,
             self.health_instances,
             self.container_instances,
+            self.virtualization_instances,
             self.nfs_instances,
             self.iscsi_instances,
             self.usermgr_instances,
@@ -1808,6 +1838,35 @@ class SynologyMCPServer:
         else:
             raise ValueError(f"Unknown container method: {method_name}")
 
+        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    # ------------------------------------------------------------------
+    # Virtual Machine Manager handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_virtualization_call(
+        self, arguments: dict, method_name: str
+    ) -> list[types.TextContent]:
+        """Handle VMM inventory, detail, and power operations."""
+        base_url = self._get_base_url(arguments)
+        virtualization = self._get_virtualization(base_url)
+
+        if method_name == "list":
+            result = virtualization.list_virtual_machines()
+        elif method_name == "get":
+            result = virtualization.get_virtual_machine(arguments["guest_id"])
+        elif method_name == "control":
+            result = await asyncio.to_thread(
+                virtualization.control_virtual_machine,
+                arguments["guest_id"],
+                arguments["action"],
+                arguments["confirm"],
+            )
+        else:
+            raise ValueError(f"Unknown VMM method: {method_name}")
+
+        if not result.get("success"):
+            raise ToolFailureError(result)
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # ------------------------------------------------------------------

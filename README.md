@@ -2,7 +2,7 @@
 
 ![Synology MCP Server](assets/banner.png)
 
-A Model Context Protocol (MCP) server for Synology NAS devices. Enables AI assistants to manage files and downloads through secure authentication and session management.
+A Model Context Protocol (MCP) server for Synology NAS devices. Enables AI assistants to manage files, downloads, containers, and virtual machines through secure authentication and session management.
 
 **🌟 NEW: Unified server supports both Claude/Cursor (stdio) and Xiaozhi (WebSocket) simultaneously!**
 
@@ -560,6 +560,25 @@ misspelled `type` would silently take the default.
   - `enable_ipv6` (optional): Enable IPv6 (default: false)
 - **`synology_container_network_delete`** - Delete a Container Manager network
   - `name` (required): Network name
+
+### 🖥️ Virtual Machine Manager (VMM)
+- **`synology_vm_list`** - List VMM virtual machines
+- **`synology_vm_get`** - Get details for one virtual machine
+  - `guest_id` (required): Stable ID from `synology_vm_list`
+- **`synology_vm_control`** - Power on, gracefully shut down, or force off a virtual machine
+  - `guest_id` (required): Stable ID from `synology_vm_list`
+  - `action` (required): `poweron`, `shutdown`, or `poweroff`
+  - `confirm` (required): Must be `true` for every power action
+  - `poweron` is accepted only for a stopped VM; `shutdown` and `poweroff` only for a running VM
+  - The tool checks the current state before sending the action and rechecks the inventory up to
+    eight times
+  - A forced `poweroff` may cause guest data loss. If the final state cannot be confirmed, the
+    action is not resubmitted; refresh the inventory before trying again
+
+These tools use the public `SYNO.Virtualization.API.Guest` v1 and
+`SYNO.Virtualization.API.Guest.Action` v1 endpoints. They require Virtual Machine Manager to be
+installed and the DSM account to have VMM access. The endpoint behavior has not been verified
+against a live NAS in this change.
 
 ### 📦 NFS Management
 - **`synology_nfs_status`** - Get NFS service status and configuration
