@@ -577,8 +577,9 @@ misspelled `type` would silently take the default.
 
 These tools use the public `SYNO.Virtualization.API.Guest` v1 and
 `SYNO.Virtualization.API.Guest.Action` v1 endpoints. They require Virtual Machine Manager to be
-installed and the DSM account to have VMM access. The endpoint behavior has not been verified
-against a live NAS in this change.
+installed and the DSM account to have VMM access. The `synology_vm_list` inventory call was
+smoke-tested against the configured live NAS. Power actions have not been exercised against a real
+guest.
 
 ### 📦 NFS Management
 - **`synology_nfs_status`** - Get NFS service status and configuration
