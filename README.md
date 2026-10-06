@@ -566,7 +566,7 @@ misspelled `type` would silently take the default.
 - **`synology_vm_get`** - Get details for one virtual machine
   - `guest_id` (required): Stable ID from `synology_vm_list`
 - **`synology_vm_resources`** - List storage, network, and disk-image IDs available to VMM
-- **`synology_vm_control`** - Power on, gracefully shut down, or force off a virtual machine
+- **`synology_vm_power`** - Power on, gracefully shut down, or force off a virtual machine
   - `guest_id` (required): Stable ID from `synology_vm_list`
   - `action` (required): `poweron`, `shutdown`, or `poweroff`
   - `confirm` (required): Must be `true` for every power action
@@ -596,9 +596,9 @@ misspelled `type` would silently take the default.
     is absent from inventory. If the result cannot be confirmed, inspect the inventory before retrying
 
 These tools use the public `SYNO.Virtualization.API.*` v1 endpoints for guests, storage, networks,
-images, tasks, and power actions. They require Virtual Machine Manager and DSM VMM access. The
-`synology_vm_list` inventory call was smoke-tested against the configured live NAS. Create, update,
-power, and delete writes have not been exercised against a real guest.
+images, tasks, and power actions. They require Virtual Machine Manager and DSM VMM access. The live
+MCPHub tools were exercised on Xpen using a temporary VM; create, update, power on/off, delete, and
+final inventory cleanup were verified.
 
 VM create reservations are stored in `~/.local/state/mcp-server-synology/vm-create-guards.sqlite3`
 so an ambiguous submission stays blocked across MCP process restarts. Set

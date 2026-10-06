@@ -404,7 +404,7 @@ class SynologyMCPServer:
             "auto_start": {"type": "boolean", "description": "Whether VMM should start the VM automatically with the host"},
             "confirm": {"type": "boolean", "description": "Must be true to authorize the requested settings changes"},
         }, ["guest_id", "confirm"]), partial(self._handle_virtualization_call, method_name="update"))
-        self._register_tool("synology_vm_control", "Control a VMM virtual machine: power it on, request a graceful shutdown, or force it off. Requires confirm=true; forced power-off can cause guest data loss. The current state is checked before action and rechecked up to eight times; ambiguous actions are never resubmitted.", TN_PR({
+        self._register_tool("synology_vm_power", "Power a VMM virtual machine on, request a graceful shutdown, or force it off. Requires confirm=true; forced power-off can cause guest data loss. The current state is checked before action and rechecked up to eight times; ambiguous actions are never resubmitted.", TN_PR({
             "guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"},
             "action": {"type": "string", "enum": ["poweron", "shutdown", "poweroff"], "description": "poweron starts a stopped VM; shutdown requests a graceful shutdown of a running VM; poweroff immediately cuts power to a running VM"},
             "confirm": {"type": "boolean", "description": "Must be true to authorize the requested power action"},
@@ -736,7 +736,7 @@ class SynologyMCPServer:
             "synology_vm_resources",
             "synology_vm_create",
             "synology_vm_update",
-            "synology_vm_control",
+            "synology_vm_power",
             "synology_vm_delete",
             "synology_vm_list",
         }
