@@ -565,6 +565,7 @@ misspelled `type` would silently take the default.
 - **`synology_vm_list`** - List VMM virtual machines
 - **`synology_vm_get`** - Get details for one virtual machine
   - `guest_id` (required): Stable ID from `synology_vm_list`
+- **`synology_vm_resources`** - List storage, network, and disk-image IDs available to VMM
 - **`synology_vm_control`** - Power on, gracefully shut down, or force off a virtual machine
   - `guest_id` (required): Stable ID from `synology_vm_list`
   - `action` (required): `poweron`, `shutdown`, or `poweroff`
@@ -574,17 +575,28 @@ misspelled `type` would silently take the default.
     eight times
   - A forced `poweroff` may cause guest data loss. If the final state cannot be confirmed, the
     action is not resubmitted; refresh the inventory before trying again
+- **`synology_vm_create`** - Create a VM with one to eight virtual disks and network adapters
+  - Required: `guest_name`, `storage_id`, `cpu_count`, `memory_mib`, `disks`, `confirm=true`
+  - Use IDs from `synology_vm_resources`; a disk is either `{ "size_gib": 64 }` or
+    `{ "image_id": "..." }`. Omitted `network_ids` creates one unconnected adapter
+  - The create request is submitted once, tracked by its DSM task ID, then CPU, memory, description,
+    startup policy, and guest hardware are checked by readback. The VM is not powered on immediately
+  - Disk-image source identity is not fully verifiable through this public create flow; such a result
+    is reported as partial and must not be retried as a new create
+- **`synology_vm_update`** - Update a VM's name, description, CPU count, memory, or automatic-start policy
+  - Required: `guest_id`, `confirm=true`; provide at least one setting to change
+  - CPU and memory changes require the VM to be stopped. Each update is submitted once and verified
+    by rereading the guest
 - **`synology_vm_delete`** - Permanently delete a stopped virtual machine; associated VM data may be removed
   - `guest_id` (required): Stable ID from `synology_vm_list`
   - `confirm` (required): Must be `true` to authorize deletion
   - The tool refuses running or unknown-state VMs, submits deletion once, and checks that the VM
     is absent from inventory. If the result cannot be confirmed, inspect the inventory before retrying
 
-These tools use the public `SYNO.Virtualization.API.Guest` v1 and
-`SYNO.Virtualization.API.Guest.Action` v1 endpoints. They require Virtual Machine Manager to be
-installed and the DSM account to have VMM access. The `synology_vm_list` inventory call was
-smoke-tested against the configured live NAS. Power and delete actions have not been exercised
-against a real guest.
+These tools use the public `SYNO.Virtualization.API.*` v1 endpoints for guests, storage, networks,
+images, tasks, and power actions. They require Virtual Machine Manager and DSM VMM access. The
+`synology_vm_list` inventory call was smoke-tested against the configured live NAS. Create, update,
+power, and delete writes have not been exercised against a real guest.
 
 ### 📦 NFS Management
 - **`synology_nfs_status`** - Get NFS service status and configuration

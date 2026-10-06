@@ -380,6 +380,30 @@ class SynologyMCPServer:
         # Virtual Machine Manager
         self._register_tool("synology_vm_list", "List virtual machines managed by Synology Virtual Machine Manager", TN, partial(self._handle_virtualization_call, method_name="list"))
         self._register_tool("synology_vm_get", "Get a virtual machine's identity, state, CPU, and memory details", TN_PR({"guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"}}, ["guest_id"]), partial(self._handle_virtualization_call, method_name="get"))
+        self._register_tool("synology_vm_resources", "List VMM storage repositories, virtual networks, and disk images available when creating a VM", TN, partial(self._handle_virtualization_call, method_name="resources"))
+        self._register_tool("synology_vm_create", "Create a VMM virtual machine with disks, network adapters, CPU, memory, description, and startup policy. Requires confirm=true. Creation is submitted once, tracked by its DSM task ID, and verified by reading the created guest back.", TN_PR({
+            "guest_name": {"type": "string", "description": "Unique VM name, 1-64 characters"},
+            "storage_id": {"type": "string", "description": "Storage ID from synology_vm_resources"},
+            "cpu_count": {"type": "integer", "minimum": 1, "maximum": 64, "description": "Virtual CPU count"},
+            "memory_mib": {"type": "integer", "minimum": 128, "maximum": 1048576, "description": "Memory in MiB"},
+            "disks": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"oneOf": [
+                {"type": "object", "properties": {"size_gib": {"type": "integer", "minimum": 1, "maximum": 1048576, "description": "Create a blank virtual disk of this size in GiB"}}, "required": ["size_gib"], "additionalProperties": False},
+                {"type": "object", "properties": {"image_id": {"type": "string", "description": "Create a disk from this disk image ID in synology_vm_resources"}}, "required": ["image_id"], "additionalProperties": False},
+            ], "description": "Each disk must contain exactly one of size_gib or image_id"}},
+            "network_ids": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}, "description": "Network IDs from synology_vm_resources; use an empty string for an unconnected adapter. Defaults to one unconnected adapter."},
+            "description": {"type": "string", "description": "Optional VM description, up to 1024 characters"},
+            "auto_start": {"type": "boolean", "description": "Start automatically with the VMM host; this does not power on the VM immediately"},
+            "confirm": {"type": "boolean", "description": "Must be true to authorize VM and virtual-disk creation"},
+        }, ["guest_name", "storage_id", "cpu_count", "memory_mib", "disks", "confirm"]), partial(self._handle_virtualization_call, method_name="create"))
+        self._register_tool("synology_vm_update", "Update a VMM virtual machine's name, description, CPU count, memory, or automatic-start policy. Requires confirm=true. CPU and memory changes require the VM to be stopped; each update is submitted once and verified by readback.", TN_PR({
+            "guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"},
+            "guest_name": {"type": "string", "description": "New VM name"},
+            "description": {"type": "string", "description": "New description; an empty string clears it"},
+            "cpu_count": {"type": "integer", "minimum": 1, "maximum": 64, "description": "New virtual CPU count; VM must be stopped if this changes"},
+            "memory_mib": {"type": "integer", "minimum": 128, "maximum": 1048576, "description": "New memory in MiB; VM must be stopped if this changes"},
+            "auto_start": {"type": "boolean", "description": "Whether VMM should start the VM automatically with the host"},
+            "confirm": {"type": "boolean", "description": "Must be true to authorize the requested settings changes"},
+        }, ["guest_id", "confirm"]), partial(self._handle_virtualization_call, method_name="update"))
         self._register_tool("synology_vm_control", "Control a VMM virtual machine: power it on, request a graceful shutdown, or force it off. Requires confirm=true; forced power-off can cause guest data loss. The current state is checked before action and rechecked up to eight times; ambiguous actions are never resubmitted.", TN_PR({
             "guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"},
             "action": {"type": "string", "enum": ["poweron", "shutdown", "poweroff"], "description": "poweron starts a stopped VM; shutdown requests a graceful shutdown of a running VM; poweroff immediately cuts power to a running VM"},
@@ -709,6 +733,9 @@ class SynologyMCPServer:
             "synology_target_map_lun",
             "synology_target_unmap_lun",
             "synology_vm_get",
+            "synology_vm_resources",
+            "synology_vm_create",
+            "synology_vm_update",
             "synology_vm_control",
             "synology_vm_delete",
             "synology_vm_list",
@@ -1853,7 +1880,7 @@ class SynologyMCPServer:
     async def _handle_virtualization_call(
         self, arguments: dict, method_name: str
     ) -> list[types.TextContent]:
-        """Handle VMM inventory, detail, power, and deletion operations."""
+        """Handle VMM resource, guest, configuration, power, and deletion operations."""
         base_url = self._get_base_url(arguments)
         virtualization = self._get_virtualization(base_url)
 
@@ -1861,6 +1888,32 @@ class SynologyMCPServer:
             result = virtualization.list_virtual_machines()
         elif method_name == "get":
             result = virtualization.get_virtual_machine(arguments["guest_id"])
+        elif method_name == "resources":
+            result = await asyncio.to_thread(virtualization.list_virtual_machine_resources)
+        elif method_name == "create":
+            result = await asyncio.to_thread(
+                virtualization.create_virtual_machine,
+                arguments["guest_name"],
+                arguments["storage_id"],
+                arguments["cpu_count"],
+                arguments["memory_mib"],
+                arguments["disks"],
+                arguments["confirm"],
+                arguments.get("network_ids"),
+                arguments.get("description", ""),
+                arguments.get("auto_start", False),
+            )
+        elif method_name == "update":
+            result = await asyncio.to_thread(
+                virtualization.update_virtual_machine,
+                arguments["guest_id"],
+                arguments["confirm"],
+                guest_name=arguments.get("guest_name"),
+                description=arguments.get("description"),
+                cpu_count=arguments.get("cpu_count"),
+                memory_mib=arguments.get("memory_mib"),
+                auto_start=arguments.get("auto_start"),
+            )
         elif method_name == "control":
             result = await asyncio.to_thread(
                 virtualization.control_virtual_machine,
