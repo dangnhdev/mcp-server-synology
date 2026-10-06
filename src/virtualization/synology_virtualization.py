@@ -1,8 +1,12 @@
 """Synology Virtual Machine Manager operations through its public API."""
 
+import hashlib
 import json
+import os
+import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from utils.synology_api import SynologyAPIClient
@@ -51,10 +55,9 @@ class SynologyVirtualization:
             verify_ssl,
             syno_token=syno_token,
         )
+        self._base_url = base_url
         self._control_locks: Dict[str, Any] = {}
         self._control_locks_guard = threading.Lock()
-        self._pending_create_names = set()
-        self._pending_create_names_guard = threading.Lock()
 
     def list_virtual_machines(self, *, timeout: Optional[int] = None) -> Dict[str, Any]:
         """Return the DSM VMM guest inventory."""
@@ -269,20 +272,10 @@ class SynologyVirtualization:
                 for guest in guests
                 if guest["guest_name"]
             ):
-                with self._pending_create_names_guard:
-                    self._pending_create_names.discard(name.casefold())
+                self._clear_vm_create_guard(name)
                 return self._failure(
                     "name_conflict", "A virtual machine with this name already exists", guest_name=name
                 )
-            with self._pending_create_names_guard:
-                if name.casefold() in self._pending_create_names:
-                    return self._failure(
-                        "submission_unverified",
-                        "A previous create request for this name has an uncertain result. "
-                        "Inspect VMM before trying again.",
-                        guest_name=name,
-                        verified=False,
-                    )
 
             storages, error = self._list_resource_rows(
                 self.storage_api,
@@ -335,8 +328,17 @@ class SynologyVirtualization:
                         "resource_conflict", "One or more disk image IDs are missing or are not disk images"
                     )
 
-            with self._pending_create_names_guard:
-                self._pending_create_names.add(name.casefold())
+            reserved, guard_error = self._reserve_vm_create_guard(name)
+            if guard_error:
+                return guard_error
+            if not reserved:
+                return self._failure(
+                    "submission_unverified",
+                    "A previous create request for this name has an uncertain result. "
+                    "Inspect VMM before trying again.",
+                    guest_name=name,
+                    verified=False,
+                )
 
             request_disks = [
                 {"create_type": 0, "vdisk_size": disk["size_gib"] * 1_024}
@@ -365,8 +367,7 @@ class SynologyVirtualization:
             )
             if not request_result.get("success"):
                 if request_error_code not in self._AMBIGUOUS_REQUEST_ERRORS:
-                    with self._pending_create_names_guard:
-                        self._pending_create_names.discard(name.casefold())
+                    self._clear_vm_create_guard(name)
                     return request_result
                 return self._failure(
                     "submission_unverified",
@@ -491,8 +492,8 @@ class SynologyVirtualization:
                 current_guest, storage, normalized_disks, normalized_networks
             ) if settings_verified else False
             if settings_verified and hardware_verified:
-                with self._pending_create_names_guard:
-                    self._pending_create_names.discard(name.casefold())
+                source_images_verified = not any("image_id" in disk for disk in normalized_disks)
+                self._clear_vm_create_guard(name)
                 return {
                     "success": True,
                     "data": {
@@ -502,7 +503,13 @@ class SynologyVirtualization:
                         "created": True,
                         "settings_verified": True,
                         "hardware_verified": True,
-                        "verified": True,
+                        "disk_source_verified": source_images_verified,
+                        "verified": source_images_verified,
+                        "verification_note": (
+                            None
+                            if source_images_verified
+                            else "DSM does not expose source disk-image IDs in guest readback; the task, settings, storage, disk and NIC counts, and network IDs were verified, but disk source and size mapping were not."
+                        ),
                         "request_accepted": bool(settings_result.get("success")),
                     },
                 }
@@ -1055,13 +1062,7 @@ class SynologyVirtualization:
     def _created_hardware_matches(
         guest: Optional[dict], storage_id: str, disks: list[dict], network_ids: list[str]
     ) -> bool:
-        if (
-            not isinstance(guest, dict)
-            or guest.get("storage_id") != storage_id
-            or any("image_id" in disk for disk in disks)
-        ):
-            # The public guest response does not identify the source image on a
-            # cloned disk, so do not claim full hardware verification for it.
+        if not isinstance(guest, dict) or guest.get("storage_id") != storage_id:
             return False
 
         def rows(value: Any) -> Optional[list]:
@@ -1081,8 +1082,8 @@ class SynologyVirtualization:
             or any(not isinstance(item, dict) for item in (*actual_disks, *actual_networks))
         ):
             return False
-        sizes = []
         disk_ids = set()
+        disk_sizes = []
         for disk in actual_disks:
             disk_id = disk.get("vdisk_id")
             if not isinstance(disk_id, str) or not disk_id or disk_id in disk_ids:
@@ -1093,13 +1094,11 @@ class SynologyVirtualization:
                 size = int(size)
             if isinstance(size, bool) or not isinstance(size, int):
                 return False
-            sizes.append(size)
-        remaining_sizes = list(sizes)
-        for requested in disks:
-            requested_size = requested["size_gib"] * 1_024
-            if requested_size not in remaining_sizes:
+            disk_sizes.append(size)
+        if not any("image_id" in requested for requested in disks):
+            expected_sizes = sorted(requested["size_gib"] * 1_024 for requested in disks)
+            if sorted(disk_sizes) != expected_sizes:
                 return False
-            remaining_sizes.remove(requested_size)
         network_interface_ids = [item.get("vnic_id") for item in actual_networks]
         if (
             any(not isinstance(item, str) or not item for item in network_interface_ids)
@@ -1110,6 +1109,69 @@ class SynologyVirtualization:
         return all(isinstance(item, str) for item in actual_network_ids) and sorted(
             actual_network_ids
         ) == sorted(network_ids)
+
+    def _vm_create_guard_key(self, guest_name: str) -> str:
+        identity = f"{self._base_url.rstrip('/').casefold()}\0{guest_name.casefold()}"
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _vm_create_guard_path() -> Path:
+        configured_path = os.environ.get("SYNOLOGY_VM_CREATE_GUARD_DB")
+        if configured_path:
+            return Path(configured_path).expanduser()
+        return Path.home() / ".local" / "state" / "mcp-server-synology" / "vm-create-guards.sqlite3"
+
+    def _reserve_vm_create_guard(
+        self, guest_name: str
+    ) -> tuple[bool, Optional[Dict[str, Any]]]:
+        """Durably reserve a name before submission so process restarts cannot permit retries."""
+        connection = None
+        try:
+            path = self._vm_create_guard_path()
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            connection = sqlite3.connect(path, timeout=5)
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS vm_create_guards (guard_key TEXT PRIMARY KEY, guest_name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            os.chmod(path, 0o600)
+            with connection:
+                cursor = connection.execute(
+                    "INSERT OR IGNORE INTO vm_create_guards (guard_key, guest_name) VALUES (?, ?)",
+                    (self._vm_create_guard_key(guest_name), guest_name),
+                )
+            return cursor.rowcount == 1, None
+        except (OSError, sqlite3.Error):
+            return False, self._failure(
+                "state_store_unavailable",
+                "The persistent VM create guard could not be read or written; no create request was sent.",
+            )
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _clear_vm_create_guard(self, guest_name: str) -> None:
+        """Clear a create reservation only after rejection or confirmed creation."""
+        connection = None
+        try:
+            path = self._vm_create_guard_path()
+            if not path.exists():
+                return
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            connection = sqlite3.connect(path, timeout=5)
+            connection.execute("PRAGMA busy_timeout = 5000")
+            os.chmod(path, 0o600)
+            with connection:
+                connection.execute(
+                    "DELETE FROM vm_create_guards WHERE guard_key = ?",
+                    (self._vm_create_guard_key(guest_name),),
+                )
+        except (OSError, sqlite3.Error):
+            # A stale reservation blocks only a repeated create with this name.
+            pass
+        finally:
+            if connection is not None:
+                connection.close()
 
     @staticmethod
     def _guest_rows(result: Dict[str, Any]) -> tuple[list[dict], Optional[Dict[str, Any]]]:

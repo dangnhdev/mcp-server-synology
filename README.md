@@ -581,8 +581,10 @@ misspelled `type` would silently take the default.
     `{ "image_id": "..." }`. Omitted `network_ids` creates one unconnected adapter
   - The create request is submitted once, tracked by its DSM task ID, then CPU, memory, description,
     startup policy, and guest hardware are checked by readback. The VM is not powered on immediately
-  - Disk-image source identity is not fully verifiable through this public create flow; such a result
-    is reported as partial and must not be retried as a new create
+  - For image-backed disks, DSM does not return the source image ID in guest details. The task,
+    VM settings, storage, disk/NIC counts, and network IDs are checked, but disk image/source and
+    exact disk-size mapping are unverified; the result sets `verified=false`. Do not retry when the
+    result says `created=true`
 - **`synology_vm_update`** - Update a VM's name, description, CPU count, memory, or automatic-start policy
   - Required: `guest_id`, `confirm=true`; provide at least one setting to change
   - CPU and memory changes require the VM to be stopped. Each update is submitted once and verified
@@ -597,6 +599,12 @@ These tools use the public `SYNO.Virtualization.API.*` v1 endpoints for guests, 
 images, tasks, and power actions. They require Virtual Machine Manager and DSM VMM access. The
 `synology_vm_list` inventory call was smoke-tested against the configured live NAS. Create, update,
 power, and delete writes have not been exercised against a real guest.
+
+VM create reservations are stored in `~/.local/state/mcp-server-synology/vm-create-guards.sqlite3`
+so an ambiguous submission stays blocked across MCP process restarts. Set
+`SYNOLOGY_VM_CREATE_GUARD_DB` to a persistent file path when running in a container. A reservation
+is cleared after confirmed rejection or creation; if a create result is uncertain and no VM appears
+in inventory, inspect DSM tasks before manually clearing that VM name's row from this database.
 
 ### 📦 NFS Management
 - **`synology_nfs_status`** - Get NFS service status and configuration

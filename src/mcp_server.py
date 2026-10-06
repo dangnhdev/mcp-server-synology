@@ -381,7 +381,7 @@ class SynologyMCPServer:
         self._register_tool("synology_vm_list", "List virtual machines managed by Synology Virtual Machine Manager", TN, partial(self._handle_virtualization_call, method_name="list"))
         self._register_tool("synology_vm_get", "Get a virtual machine's identity, state, CPU, and memory details", TN_PR({"guest_id": {"type": "string", "description": "Stable guest_id from synology_vm_list"}}, ["guest_id"]), partial(self._handle_virtualization_call, method_name="get"))
         self._register_tool("synology_vm_resources", "List VMM storage repositories, virtual networks, and disk images available when creating a VM", TN, partial(self._handle_virtualization_call, method_name="resources"))
-        self._register_tool("synology_vm_create", "Create a VMM virtual machine with disks, network adapters, CPU, memory, description, and startup policy. Requires confirm=true. Creation is submitted once, tracked by its DSM task ID, and verified by reading the created guest back.", TN_PR({
+        self._register_tool("synology_vm_create", "Create a VMM virtual machine with disks, network adapters, CPU, memory, description, and startup policy. Requires confirm=true. Creation is submitted once, tracked by its DSM task ID, and verified by reading the created guest back. For image-backed disks, source image and exact disk-size mapping are not exposed by DSM; a created VM may return success=true with verified=false.", TN_PR({
             "guest_name": {"type": "string", "description": "Unique VM name, 1-64 characters"},
             "storage_id": {"type": "string", "description": "Storage ID from synology_vm_resources"},
             "cpu_count": {"type": "integer", "minimum": 1, "maximum": 64, "description": "Virtual CPU count"},
